@@ -306,4 +306,7 @@ $RECYCLE.BIN/
 # Windows shortcuts
 *.lnk
 
+# Dataset folder
+./datasets/
+
 # End of https://www.toptal.com/developers/gitignore/api/windows,pycharm+all,python,visualstudiocode
