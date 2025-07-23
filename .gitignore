@@ -307,6 +307,6 @@ $RECYCLE.BIN/
 *.lnk
 
 # Dataset folder
-./datasets/
+datasets/
 
 # End of https://www.toptal.com/developers/gitignore/api/windows,pycharm+all,python,visualstudiocode
