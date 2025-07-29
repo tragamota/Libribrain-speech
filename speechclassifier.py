@@ -1,13 +1,37 @@
+import torch
 from torch import nn
+
 
 class SoftSensorAttention(nn.Module):
 
-    def __init__(self):
+    def __init__(self, in_channels=306, time_steps=200, num_heads=4, hidden_dim=256, num_layers=2):
         super(SoftSensorAttention, self).__init__()
 
-    def forward(self, x):
+        self.encoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                d_model=time_steps,
+                nhead=num_heads,
+                dim_feedforward=hidden_dim,
+                dropout=0.3,
+                batch_first=True
+            ),
+            num_layers=num_layers
+        )
 
-        return x
+        self.proj = nn.Sequential(
+            nn.AdaptiveAvgPool1d(1),
+            nn.Flatten(1),
+            nn.Linear(in_channels, in_channels),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        x = self.encoder(x)
+
+        weights = self.proj(x)
+        weights = weights.unsqueeze(2)
+
+        return x * weights
 
 
 class SpeechClassifier(nn.Module):
@@ -20,59 +44,68 @@ class SpeechClassifier(nn.Module):
 
         self.mode = mode
 
+        self.sensor_attention = SoftSensorAttention(in_channels=306)
+
         self.encoder = nn.Sequential(
-            nn.Conv1d(306, 512, kernel_size=7, padding=3),
-            nn.BatchNorm1d(512),
+            nn.Conv1d(306, 250, kernel_size=7, padding=3),
+            nn.BatchNorm1d(250),
             nn.GELU(),
             nn.Dropout(0.3),
-            nn.Conv1d(512, 384, kernel_size=5, padding=2),
-            nn.BatchNorm1d(384),
+            nn.Conv1d(250, 184, kernel_size=5, padding=2),
+            nn.BatchNorm1d(184),
             nn.GELU(),
             nn.Dropout(0.3),
-            nn.Conv1d(384, 256, kernel_size=3, padding=1),
-            nn.BatchNorm1d(256),
-            nn.GELU(),
-            nn.Dropout(0.3),
-            nn.Conv1d(256, 128, kernel_size=3, padding=1),
-            nn.BatchNorm1d(128),
-            nn.GELU(),
-            nn.Dropout(0.3),
-            nn.Conv1d(128, 128, kernel_size=3, padding=1),
+            nn.Conv1d(184, 128, kernel_size=3, padding=1),
             nn.BatchNorm1d(128),
             nn.GELU(),
         )
 
-        self.attention_downsample = nn.Sequential(
-            nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model=128, activation='gelu', nhead=8, dim_feedforward=256, dropout=0.4, batch_first=True), num_layers=2),
-            nn.Linear(128, 128),
-            nn.GELU(),
-            nn.Linear(128, 64),
-            nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model=64, activation='gelu', nhead=4, dim_feedforward=128, dropout=0.2, batch_first=True), num_layers=2)
-        )
+        self.pos_embed = nn.Embedding(200, 128)
+
+        self.attention_encoder = nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model=128, nhead=4, activation='gelu', dim_feedforward=512, dropout=0.3, batch_first=True), num_layers=4, norm=nn.LayerNorm(128))
 
         self.projection = nn.Sequential(
-            nn.Linear(128, 128),
-            nn.ReLU(),
-            nn.Linear(64, 64),
+            nn.Linear(128, 96),
+            nn.GELU(),
+            nn.Linear(96, 128),
         )
 
         self.classifier = nn.Sequential(
-            nn.Linear(64, 32),
+            nn.Linear(128, 96),
             nn.GELU(),
-            nn.Linear(32, 2)
+            nn.Linear(96, 2)
         )
 
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, (nn.Conv1d, nn.Linear)):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
 
     def forward(self, x):
+        _, _, seq_len = x.size()
+
+        x = self.sensor_attention(x)
+
         x = self.encoder(x)
         x = x.permute(0, 2, 1)
-        embedding = self.attention_downsample(x)
-        x = self.classifier(embedding)
+
+        positions = torch.arange(seq_len, device=x.device).unsqueeze(0)
+
+        x = x + self.pos_embed(positions)
+        x = self.attention_encoder(x)
+
+        logits = self.classifier(x)
 
         if self.mode == "contrastive":
-            embedding = self.projection(embedding)
+            embedding = self.projection(x)
 
-            return x, embedding
+            return logits, embedding
 
-        return x
-
+        return logits
