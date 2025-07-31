@@ -18,11 +18,21 @@ from torchmetrics import Accuracy, F1Score, AUROC
 from tqdm import tqdm
 
 from augmentations import MEGCompose, GaussianNoise, UniformScaling, ChannelDropout
-from speechclassifier import SpeechClassifier
+from speechclassifier import SpeechClassifier, SpeechClassifierSTFT
 
 SENSORS_SPEECH_MASK = [18, 20, 22, 23, 45, 120, 138, 140, 142, 143, 145,
                        146, 147, 149, 175, 176, 177, 179, 180, 198, 271, 272, 275]
 
+def convert_to_stft(data, n_fft=256, hop_length=32, win_length=16):
+    B, C, T = data.shape
+    x = data.view(B * C, T)  # (B*C, T)
+
+    x = torch.stft(x, n_fft=n_fft, hop_length=hop_length, win_length=win_length, window=torch.hann_window(win_length, device=x.device), return_complex=True)
+    x = torch.log1p(x.abs())
+
+    x = x.view(B, C, x.shape[1], x.shape[2])
+
+    return x
 
 def normalize_per_sensor(x, eps=1e-6):
     mean = x.mean(dim=2, keepdim=True)
@@ -43,18 +53,17 @@ def train(model, dataloader, optimizer, criterion, scaler, device):
     progress_bar = tqdm(dataloader, desc="Training", leave=True)
 
     transforms = MEGCompose([
-        GaussianNoise(std=0.05, p=0.5),
+        GaussianNoise(std=0.1, p=0.5),
         UniformScaling(scale_min=0.8, scale_max=1.2, p=0.5),
         ChannelDropout(dropout_prob=0.3, p=0.35),
     ]).to(device)
 
     for data, targets in progress_bar:
-        # data = data[:, SENSORS_SPEECH_MASK, :]
         data = data.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
 
         data = transforms(data)
-        # data = normalize_per_sensor(data)
+        data = convert_to_stft(data)
 
         optimizer.zero_grad()
 
@@ -119,6 +128,8 @@ def eval(model, dataloader, criterion, device):
             data = data.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
 
+            data = convert_to_stft(data)
+
             if model.mode == "contrastive":
                 preds, embeddings = model(data)
             else:
@@ -152,7 +163,7 @@ def main(args):
     random.seed(args.seed)
     np.random.seed(args.seed)
 
-    model = SpeechClassifier(mode="classification").to(args.device)
+    model = SpeechClassifierSTFT(mode="classification").to(args.device)
 
     train_dataset = LibriBrainSpeech("./datasets", partition="train", tmin=0.0, tmax=0.8, oversample_silence_jitter=50)
     val_dataset = LibriBrainSpeech("./datasets", partition="validation", tmin=0.0, tmax=0.8, stride=5)

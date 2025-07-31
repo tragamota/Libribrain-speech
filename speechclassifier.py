@@ -109,3 +109,66 @@ class SpeechClassifier(nn.Module):
             return logits, embedding
 
         return logits
+
+
+class SpeechClassifierSTFT(nn.Module):
+    valid_modes = ['contrastive', 'classification']
+
+    def __init__(self, mode="contrastive"):
+        super(SpeechClassifierSTFT, self).__init__()
+
+        assert mode in self.valid_modes, f"Invalid mode '{mode}'. Choose from {self.valid_modes}"
+
+        self.mode = mode
+
+        self.encoder = nn.Sequential(
+            nn.Conv2d(306, 512, kernel_size=3, padding=1),
+            nn.BatchNorm2d(512),
+            nn.GELU(),
+            nn.Dropout(0.3),
+            nn.Conv2d(512, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.GELU(),
+            nn.Dropout(0.3),
+            nn.Conv2d(256, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.GELU(),
+            nn.Dropout(0.3),
+            nn.Conv2d(128, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.Dropout(0.3),
+            nn.GELU(),
+            nn.Conv2d(128, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.Dropout(0.3),
+            nn.GELU(),
+            nn.Conv2d(64, 200, kernel_size=1),
+            nn.BatchNorm2d(200),
+            nn.GELU(),
+            nn.AdaptiveAvgPool2d((8, 8))
+        )
+
+        self.pos_embed = nn.Embedding(200, 64)
+        self.attention_encoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=64, nhead=4, activation='gelu', dim_feedforward=256, dropout=0.3, batch_first=True),
+            num_layers=4,
+            norm=nn.LayerNorm(64))
+
+        self.classifier = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.GELU(),
+            nn.Linear(32, 2)
+        )
+
+
+    def forward(self, x):
+        x = self.encoder(x)
+        x = x.flatten(1)
+        # x = x.permute(0, 2, 1)
+
+        positions = torch.arange(200, device=x.device).unsqueeze(0)
+
+        x = x + self.pos_embed(positions)
+        x = self.attention_encoder(x)
+
+        return self.classifier(x)

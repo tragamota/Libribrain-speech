@@ -5,13 +5,14 @@ import torch
 from pnpl.datasets import LibriBrainCompetitionHoldout
 from tqdm import tqdm
 
-from speechclassifier import SpeechClassifier
+from speechclassifier import SpeechClassifier, SpeechClassifierSTFT
+from train import convert_to_stft, normalize_per_sensor
 
 SENSORS_SPEECH_MASK = [18, 20, 22, 23, 45, 120, 138, 140, 142, 143, 145,
                        146, 147, 149, 175, 176, 177, 179, 180, 198, 271, 272, 275]
 
 def main(args):
-    model = SpeechClassifier(mode="classification").to(args.device)
+    model = SpeechClassifierSTFT(mode="classification").to(args.device)
     model.load_state_dict(torch.load(args.weights))
     model.eval()
 
@@ -36,6 +37,9 @@ def main(args):
         if prediction_length < 200:
             prediction_length = data.shape[2]
             data = torch.nn.functional.pad(data, (0, 200 - data.shape[2]))
+
+        data = convert_to_stft(data)
+        data = normalize_per_sensor(data)
 
         with torch.no_grad():
             logits = model(data)
